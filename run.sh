@@ -2,7 +2,7 @@
 # TaierSpeedtest 一键运行：下载最新 Release 并启动。无需安装字体或其它依赖。
 set -euo pipefail
 
-REPO="${TAIERSPEED_REPO:-MiaM1ku/taierspeedtest}"
+REPO="${TAIERSPEED_REPO:-MbaoWang/taierspeedtest-mod}"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 case "$ARCH" in
