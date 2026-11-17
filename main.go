@@ -248,9 +248,8 @@ func prompt(r *bufio.Reader, msg, def string) string {
 	return line
 }
 
-func interactive(info ClientInfo) (jobs [][3]string, modes []string, err error) {
+func interactive(info ClientInfo, v6 bool, askFamily bool) (jobs [][3]string, modes []string, wantV4, wantV6 bool, err error) {
 	r := bufio.NewReader(os.Stdin)
-	v6 := hasIPv6Internet()
 	loc := info.City + info.Oper
 	if loc == info.Oper {
 		loc = info.Province + info.Oper
@@ -258,7 +257,7 @@ func interactive(info ClientInfo) (jobs [][3]string, modes []string, err error) 
 	fmt.Printf("%s  全球网测 Linux 客户端\n\n", c(bold+cyan, "TaierSpeedtest"))
 	fmt.Printf("  出口    %s  %s\n", loc, info.IP)
 	if v6 {
-		fmt.Println("  IPv6    可通互联网，将加测 IPv6")
+		fmt.Println("  IPv6    可通互联网")
 	} else {
 		fmt.Println("  IPv6    不可用")
 	}
@@ -272,7 +271,7 @@ func interactive(info ClientInfo) (jobs [][3]string, modes []string, err error) 
 	raw := prompt(r, "  请输入测速点: ", "")
 	jobs, err = parsePoints(raw)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, false, err
 	}
 	fmt.Println()
 	fmt.Println("  测速模式  回车 = 单线程 + 多线程对照")
@@ -289,7 +288,49 @@ func interactive(info ClientInfo) (jobs [][3]string, modes []string, err error) 
 	default:
 		modes = []string{"single", "multi"}
 	}
-	return jobs, modes, nil
+	wantV4, wantV6 = true, v6
+	if askFamily {
+		fmt.Println()
+		if v6 {
+			fmt.Println("  IP 协议  回车 = IPv4 + IPv6 都测")
+			fmt.Println("    1) IPv4 + IPv6  (默认)")
+		} else {
+			fmt.Println("  IP 协议  回车 = 只测 IPv4（本机 IPv6 不可用）")
+			fmt.Println("    1) IPv4 + IPv6")
+		}
+		fmt.Println("    2) 只测 IPv4")
+		fmt.Println("    3) 只测 IPv6")
+		fmt.Println()
+		def := "1"
+		if !v6 {
+			def = "2"
+		}
+		switch prompt(r, "  请选择 [1/2/3]: ", def) {
+		case "1":
+			wantV4, wantV6 = true, true
+		case "3":
+			wantV4, wantV6 = false, true
+		default:
+			wantV4, wantV6 = true, false
+		}
+		if wantV6 && !v6 {
+			fmt.Println(c(yellow, "  [!] 本机 IPv6 似乎不通，IPv6 结果可能全部失败"))
+		}
+	}
+	return jobs, modes, wantV4, wantV6, nil
+}
+
+// parseFamily 解析 IP 协议选择：4 / 6 / both
+func parseFamily(s string) (v4, v6 bool, err error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "4", "v4", "ipv4":
+		return true, false, nil
+	case "6", "v6", "ipv6":
+		return false, true, nil
+	case "both", "all", "46", "4+6", "dual":
+		return true, true, nil
+	}
+	return false, false, fmt.Errorf("无效的 IP 协议选择: %s（可用 4 / 6 / both）", s)
 }
 
 func makeIMEI() string {
@@ -353,8 +394,9 @@ func main() {
 	upTh := flag.Int("up-threads", 4, "多线程上行连接数")
 	modeF := flag.String("mode", "", "both|single|multi，交互时可不填")
 	jsonF := flag.Bool("json", false, "JSON 输出")
-	ipv6F := flag.Bool("ipv6", false, "强制 IPv6")
-	noIPv6 := flag.Bool("no-ipv6", false, "不测 IPv6")
+	ipF := flag.String("ip", "", "IP 协议: 4|6|both，默认 IPv4，IPv6 可用时自动加测")
+	ipv6F := flag.Bool("ipv6", false, "强制加测 IPv6（等同 --ip both）")
+	noIPv6 := flag.Bool("no-ipv6", false, "不测 IPv6（等同 --ip 4）")
 	noImage := flag.Bool("no-image", false, "不出图")
 	flag.Parse()
 	if *duration < 5 {
@@ -370,6 +412,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 决定 IP 协议：--ip 优先，其次 --ipv6 / --no-ipv6，否则交互询问或自动探测
+	var wantV4, wantV6 bool
+	familySet := false
+	if *ipF != "" {
+		wantV4, wantV6, err = parseFamily(*ipF)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s[X] %v%s\n", red, err, nc)
+			os.Exit(1)
+		}
+		familySet = true
+	} else if *noIPv6 {
+		wantV4, wantV6, familySet = true, false, true
+	} else if *ipv6F {
+		wantV4, wantV6, familySet = true, true, true
+	}
+	v6OK := false
+	if !familySet || wantV6 {
+		v6OK = hasIPv6Internet()
+	}
+	if wantV6 && !v6OK {
+		fmt.Fprintf(os.Stderr, "%s[!] 本机 IPv6 似乎不通，IPv6 结果可能全部失败%s\n", yellow, nc)
+	}
+
 	var jobs [][3]string
 	var modes []string
 	if *points != "" {
@@ -382,7 +447,14 @@ func main() {
 		jobs = targetsBSG()
 		modes = []string{"single", "multi"}
 	} else {
-		jobs, modes, err = interactive(info)
+		var v4, v6 bool
+		jobs, modes, v4, v6, err = interactive(info, v6OK, !familySet)
+		if !familySet {
+			wantV4, wantV6, familySet = v4, v6, true
+		}
+	}
+	if !familySet {
+		wantV4, wantV6 = true, v6OK
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s[X] %v%s\n", red, err, nc)
@@ -403,22 +475,22 @@ func main() {
 	fmt.Printf("%s  出口 %s  %s%s\n", dim, info.IP, loc, nc)
 	fmt.Println()
 
-	wantV6 := !*noIPv6 && (*ipv6F || hasIPv6Internet())
-	if !*jsonF {
-		printHeader("IPv4", modes)
-	}
-
 	var rows []ProbeResult
-	total := len(jobs)
+	total := 0
+	if wantV4 {
+		total += len(jobs)
+	}
 	if wantV6 {
-		total *= 2
+		total += len(jobs)
 	}
 	total *= len(modes)
 	done := 0
 
 	runFamily := func(ipv6 bool, family string) {
-		if !*jsonF && ipv6 {
-			fmt.Println()
+		if !*jsonF {
+			if len(rows) > 0 {
+				fmt.Println()
+			}
 			printHeader(family, modes)
 		}
 		for _, j := range jobs {
@@ -439,7 +511,9 @@ func main() {
 		}
 	}
 
-	runFamily(false, "IPv4")
+	if wantV4 {
+		runFamily(false, "IPv4")
+	}
 	if wantV6 {
 		runFamily(true, "IPv6")
 	}
