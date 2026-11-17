@@ -1,6 +1,6 @@
 # TaierSpeedtest
 
-全球网测（泰尔测速）Linux 客户端。协议还原自 `com.cnspeedtest.globalspeed` 4.4.8。
+全球网测（泰尔测速）Linux 客户端。Fork 自 [MiaM1ku/taierspeedtest](https://github.com/MiaM1ku/taierspeedtest)，新增 IPv4 / IPv6 选择。协议还原自 `com.cnspeedtest.globalspeed` 4.4.8。
 
 单个静态 Go 二进制，不依赖系统字体或 ImageMagick。默认交互：北上广省会 × 电信/联通/移动，单线程 + 多线程对照。本机 IPv6 能访问互联网时自动加测 IPv6。
 
@@ -9,13 +9,19 @@
 任意 Linux amd64/arm64 机器，无需预装依赖：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/MiaM1ku/taierspeedtest/main/run.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/MbaoWang/taierspeedtest-mod/main/run.sh)
 ```
 
 指定测速点：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/MiaM1ku/taierspeedtest/main/run.sh) --points 湖北
+bash <(curl -fsSL https://raw.githubusercontent.com/MbaoWang/taierspeedtest-mod/main/run.sh) --points 湖北
+```
+
+只测 IPv6（`--ip 4` / `--ip 6` / `--ip both`）：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/MbaoWang/taierspeedtest-mod/main/run.sh) --ip 6
 ```
 
 `run.sh` 只下载对应架构的 Release 并执行。二进制内嵌中文字体，可直接生成 PNG。
@@ -23,8 +29,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/MiaM1ku/taierspeedtest/main/
 ## 本地编译
 
 ```bash
-git clone https://github.com/MiaM1ku/taierspeedtest.git
-cd taierspeedtest
+git clone https://github.com/MbaoWang/taierspeedtest-mod.git
+cd taierspeedtest-mod
 go build -o taierspeedtest .
 ./taierspeedtest
 ```
