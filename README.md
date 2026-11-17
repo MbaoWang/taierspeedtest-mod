@@ -35,6 +35,17 @@ go build -o taierspeedtest .
 
 - **测速点**：回车 = 北上广省会三网；也可 `湖北`、`北京,上海,浙江`、`武汉电信,杭州联通`
 - **模式**：回车 = 单线程 + 多线程对照
+- **IP 协议**：回车 = 本机 IPv6 可用时 IPv4 + IPv6 都测，否则只测 IPv4；也可选只测 IPv4 或只测 IPv6
+
+## 指定 IPv4 / IPv6
+
+```bash
+./taierspeedtest --ip 4      # 只测 IPv4
+./taierspeedtest --ip 6      # 只测 IPv6
+./taierspeedtest --ip both   # IPv4 + IPv6 都测
+```
+
+不加 `--ip` 时，交互模式会询问；非交互模式默认 IPv4，并在 IPv6 可用时自动加测。旧参数 `--ipv6`（= both）、`--no-ipv6`（= 4）仍可用。
 
 ## 结果图
 
