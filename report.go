@@ -61,6 +61,13 @@ func imgSpeedColor(v float64, text string) color.RGBA {
 	return colOK
 }
 
+func imgRetransHex(r ProbeResult) string {
+	if r.Retrans == "" || r.Retrans == "-" || r.RetransF < 0 {
+		return hexMuted
+	}
+	return []string{hexOK, hexWarn, hexBad}[retransLevel(r.RetransF)]
+}
+
 func imgSpeedHex(v float64, text string) string {
 	c := imgSpeedColor(v, text)
 	return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
@@ -100,23 +107,27 @@ func groupedRows(rows []ProbeResult) (families []string, grouped map[string][]Pr
 func reportHeaders(modes []string) []string {
 	h := []string{"节点", "延迟"}
 	if contains(modes, "single") {
-		h = append(h, "单线程上传", "单线程下载")
+		h = append(h, "单线程去程", "单线程回程")
 	}
 	if contains(modes, "multi") {
-		h = append(h, "多线程上传", "多线程下载")
+		h = append(h, "多线程去程", "多线程回程")
 	}
-	return h
+	return append(h, "回程重传")
 }
 
 func reportCells(r ProbeResult, modes []string) []string {
 	cells := []string{r.Region, r.RTT}
 	if contains(modes, "single") {
-		cells = append(cells, r.SingleUp, r.SingleDown)
+		cells = append(cells, r.SingleDown, r.SingleUp)
 	}
 	if contains(modes, "multi") {
-		cells = append(cells, r.MultiUp, r.MultiDown)
+		cells = append(cells, r.MultiDown, r.MultiUp)
 	}
-	return cells
+	retrans := r.Retrans
+	if retrans == "" {
+		retrans = "-"
+	}
+	return append(cells, retrans)
 }
 
 func reportFills(r ProbeResult, modes []string) []string {
@@ -125,12 +136,12 @@ func reportFills(r ProbeResult, modes []string) []string {
 		fills[1] = hexOK
 	}
 	if contains(modes, "single") {
-		fills = append(fills, imgSpeedHex(r.SingleUpF, r.SingleUp), imgSpeedHex(r.SingleDownF, r.SingleDown))
+		fills = append(fills, imgSpeedHex(r.SingleDownF, r.SingleDown), imgSpeedHex(r.SingleUpF, r.SingleUp))
 	}
 	if contains(modes, "multi") {
-		fills = append(fills, imgSpeedHex(r.MultiUpF, r.MultiUp), imgSpeedHex(r.MultiDownF, r.MultiDown))
+		fills = append(fills, imgSpeedHex(r.MultiDownF, r.MultiDown), imgSpeedHex(r.MultiUpF, r.MultiUp))
 	}
-	return fills
+	return append(fills, imgRetransHex(r))
 }
 
 func hexToRGBA(h string) color.RGBA {
@@ -203,7 +214,7 @@ func renderReportPNG(info ClientInfo, rows []ProbeResult, path string, modes []s
 		width = 720
 	}
 	lineH := 26
-	h := 150
+	h := 172
 	for _, f := range families {
 		h += 40 + lineH*(1+len(grouped[f])) + 16
 	}
@@ -250,6 +261,7 @@ func renderReportPNG(info ClientInfo, rows []ProbeResult, path string, modes []s
 		y += 16
 	}
 	d.Face = smallF
+	drawText(img, smallF, (width-d.MeasureString(legendText).Round())/2, h-42, legendText, colMuted, false)
 	foot := "github.com/MiaM1ku/taierspeedtest"
 	drawText(img, smallF, (width-d.MeasureString(foot).Round())/2, h-18, foot, colMuted, false)
 

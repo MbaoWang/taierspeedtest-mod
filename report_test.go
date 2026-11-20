@@ -17,6 +17,7 @@ func sampleRows() []ProbeResult {
 		SingleUp: "12.00Mbps", SingleDown: "200.00Mbps",
 		MultiUp: "50.00Mbps", MultiDown: "1400.00Mbps",
 		SingleUpF: 12, SingleDownF: 200, MultiUpF: 50, MultiDownF: 1400,
+		Retrans: "2.31%", RetransF: 2.31,
 	}}
 }
 
