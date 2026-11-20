@@ -68,7 +68,7 @@ type ProbeResult struct {
 	SingleDownF float64 `json:"single_down_f"`
 	MultiUpF    float64 `json:"multi_up_f"`
 	MultiDownF  float64 `json:"multi_down_f"`
-	Retrans     string  `json:"retrans"`   // 回程（上传方向）TCP 重传率
+	Retrans     string  `json:"retrans"`   // 回程（上传方向）TCP 重传率，优先取单线程
 	RetransF    float64 `json:"retrans_f"` // 百分比，-1 表示不可用
 }
 
@@ -109,7 +109,7 @@ func fmtMS(v float64) string {
 	return fmt.Sprintf("%.0fms", v)
 }
 
-const legendText = "去程 = 测速点→本机（下载）  回程 = 本机→测速点（上传）  回程重传 = 本机发出的 TCP 重传率"
+const legendText = "去程 = 测速点→本机（下载）  回程 = 本机→测速点（上传）  回程重传 = 单线程回程 TCP 重传段 ÷ 发出数据段"
 
 func fmtRetrans(pct float64) string {
 	if pct < 0 {
@@ -118,12 +118,12 @@ func fmtRetrans(pct float64) string {
 	return fmt.Sprintf("%.2f%%", pct)
 }
 
-// retransLevel：0 好（<1%），1 一般（<5%），2 差
+// retransLevel 与 TcpQuality 一致：≤10% 好，10–20% 一般，≥20% 差
 func retransLevel(pct float64) int {
 	switch {
-	case pct < 1:
+	case pct <= 10:
 		return 0
-	case pct < 5:
+	case pct < 20:
 		return 1
 	}
 	return 2
@@ -158,26 +158,24 @@ func cell(text string, v float64, w int) string {
 }
 
 func printHeader(family string, modes []string) {
-	parts := []string{c(cyan, padLeft(12, family)), c(cyan, padLeft(8, "延迟"))}
+	parts := []string{c(cyan, padLeft(12, family)), c(cyan, padLeft(8, "延迟")), c(cyan, padLeft(10, "回程重传"))}
 	if contains(modes, "single") {
 		parts = append(parts, c(cyan, padLeft(12, "单线程去程")), c(cyan, padLeft(12, "单线程回程")))
 	}
 	if contains(modes, "multi") {
 		parts = append(parts, c(cyan, padLeft(12, "多线程去程")), c(cyan, padLeft(12, "多线程回程")))
 	}
-	parts = append(parts, c(cyan, padLeft(10, "回程重传")))
 	fmt.Println("  " + strings.Join(parts, "  "))
 }
 
 func printRow(r ProbeResult, modes []string) {
-	parts := []string{c(cyan, padLeft(12, r.Region)), padLeft(8, r.RTT)}
+	parts := []string{c(cyan, padLeft(12, r.Region)), padLeft(8, r.RTT), retransCell(r.Retrans, r.RetransF, 10)}
 	if contains(modes, "single") {
 		parts = append(parts, cell(r.SingleDown, r.SingleDownF, 12), cell(r.SingleUp, r.SingleUpF, 12))
 	}
 	if contains(modes, "multi") {
 		parts = append(parts, cell(r.MultiDown, r.MultiDownF, 12), cell(r.MultiUp, r.MultiUpF, 12))
 	}
-	parts = append(parts, retransCell(r.Retrans, r.RetransF, 10))
 	fmt.Println("  " + strings.Join(parts, "  "))
 }
 
@@ -223,7 +221,7 @@ func targetsBSG() [][3]string {
 }
 
 func parsePoints(text string) ([][3]string, error) {
-	text = strings.TrimSpace(text)
+	text = strings.TrimSpace(toSimplified(text))
 	if text == "" {
 		return targetsBSG(), nil
 	}
@@ -294,7 +292,7 @@ func interactive(info ClientInfo, v6 bool, askFamily bool) (jobs [][3]string, mo
 	}
 	fmt.Println()
 	fmt.Println("  测速点  回车 = 北上广省会 × 电信/联通/移动")
-	fmt.Println("          可填省份、城市，多个用逗号分隔")
+	fmt.Println("          可填省份、城市，多个用逗号分隔（简繁体皆可）")
 	fmt.Println("          例: 湖北")
 	fmt.Println("          例: 北京,上海,浙江")
 	fmt.Println("          例: 武汉电信,杭州联通")
@@ -401,7 +399,7 @@ func runOne(base, ip, prov, city, isp, imei string, lengthS, intervalMS int, mod
 	}
 	defer dequeue(*s, uuid)
 	r.RTT = fmtMS(measureLatency(s.HostIP, s.Port))
-	var rs RetransStat
+	var singleRS, multiRS RetransStat
 	for _, mode := range modes {
 		dth, uth := downTh, upTh
 		if mode == "single" {
@@ -409,8 +407,16 @@ func runOne(base, ip, prov, city, isp, imei string, lengthS, intervalMS int, mod
 		}
 		down, _ := runPhase(*s, uuid, true, dth, lengthS, intervalMS)
 		up, upRS := runPhase(*s, uuid, false, uth, lengthS, intervalMS)
-		rs.Add(upRS)
+		if mode == "single" {
+			singleRS.Add(upRS)
+		} else {
+			multiRS.Add(upRS)
+		}
 		applyMode(&r, mode, up, down)
+	}
+	rs := singleRS
+	if !rs.OK {
+		rs = multiRS
 	}
 	r.RetransF = rs.Percent()
 	r.Retrans = fmtRetrans(r.RetransF)

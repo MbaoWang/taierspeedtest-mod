@@ -105,33 +105,33 @@ func groupedRows(rows []ProbeResult) (families []string, grouped map[string][]Pr
 }
 
 func reportHeaders(modes []string) []string {
-	h := []string{"节点", "延迟"}
+	h := []string{"节点", "延迟", "回程重传"}
 	if contains(modes, "single") {
 		h = append(h, "单线程去程", "单线程回程")
 	}
 	if contains(modes, "multi") {
 		h = append(h, "多线程去程", "多线程回程")
 	}
-	return append(h, "回程重传")
+	return h
 }
 
 func reportCells(r ProbeResult, modes []string) []string {
-	cells := []string{r.Region, r.RTT}
+	retrans := r.Retrans
+	if retrans == "" {
+		retrans = "-"
+	}
+	cells := []string{r.Region, r.RTT, retrans}
 	if contains(modes, "single") {
 		cells = append(cells, r.SingleDown, r.SingleUp)
 	}
 	if contains(modes, "multi") {
 		cells = append(cells, r.MultiDown, r.MultiUp)
 	}
-	retrans := r.Retrans
-	if retrans == "" {
-		retrans = "-"
-	}
-	return append(cells, retrans)
+	return cells
 }
 
 func reportFills(r ProbeResult, modes []string) []string {
-	fills := []string{hexTeal, hexMuted}
+	fills := []string{hexTeal, hexMuted, imgRetransHex(r)}
 	if r.RTT != "-" {
 		fills[1] = hexOK
 	}
@@ -141,7 +141,7 @@ func reportFills(r ProbeResult, modes []string) []string {
 	if contains(modes, "multi") {
 		fills = append(fills, imgSpeedHex(r.MultiDownF, r.MultiDown), imgSpeedHex(r.MultiUpF, r.MultiUp))
 	}
-	return append(fills, imgRetransHex(r))
+	return fills
 }
 
 func hexToRGBA(h string) color.RGBA {
