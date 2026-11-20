@@ -152,7 +152,7 @@ func (p *retransProbe) finalize() {
 	p.mu.Unlock()
 }
 
-// RetransStat 是一组连接的发送量与重传量合计。
+// RetransStat 是一组连接的发出数据段与重传段合计。
 type RetransStat struct {
 	Sent    uint64
 	Retrans uint64
@@ -168,12 +168,16 @@ func (a *RetransStat) Add(b RetransStat) {
 	a.OK = true
 }
 
-// Percent 返回重传率（%），不可用时返回 -1。
+// Percent 返回重传率（%，0–100），不可用时返回 -1。
 func (a RetransStat) Percent() float64 {
 	if !a.OK || a.Sent == 0 {
 		return -1
 	}
-	return float64(a.Retrans) * 100 / float64(a.Sent)
+	p := float64(a.Retrans) * 100 / float64(a.Sent)
+	if p > 100 {
+		p = 100
+	}
+	return p
 }
 
 func parseHTTPHeader(buf []byte) (code int, bodyOff int, ok bool) {

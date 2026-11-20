@@ -37,9 +37,9 @@ func TestReadTCPRetransLoopback(t *testing.T) {
 		t.Fatal("TCP_INFO 不可用")
 	}
 	t.Logf("sent=%d retrans=%d", sent, retrans)
-	// 内核 4.19+ 以字节计：应等于写入量；旧内核以段计：应大于 0
-	if sent != total && (sent == 0 || sent > total) {
-		t.Fatalf("sent=%d, want %d", sent, total)
+	// 以段计：4MiB 至少拆成数十段，且不会超过字节数
+	if sent < 10 || sent > total {
+		t.Fatalf("sent segments=%d", sent)
 	}
 	if retrans != 0 {
 		t.Fatalf("loopback retrans=%d", retrans)

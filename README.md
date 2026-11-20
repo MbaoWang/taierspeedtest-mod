@@ -59,7 +59,7 @@ go build -o taierspeedtest .
 |---|---|
 | 去程 | 测速点 → 本机（下载） |
 | 回程 | 本机 → 测速点（上传） |
-| 回程重传 | 回程测速期间本机 TCP 重传字节 ÷ 发送字节（读取 Linux `TCP_INFO`，内核 4.19+；旧内核以段数计）。<1% 绿、1–5% 黄、>5% 红 |
+| 回程重传 | 单线程回程测速时，本机 TCP 重传段数 ÷ 发出数据段数（读取 Linux `TCP_INFO` 的 `total_retrans / data_segs_out`，算法参考 [TcpQuality](https://github.com/ibsgss/TcpQuality)）。只测多线程时改用多线程回程。≤10% 绿、10–20% 黄、≥20% 红 |
 
 去程方向的重传发生在测速服务器端，本机无法读取，因此只提供回程重传。
 

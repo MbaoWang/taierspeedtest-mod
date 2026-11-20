@@ -11,14 +11,13 @@ import (
 
 // struct tcp_info（include/uapi/linux/tcp.h）中用到的字段偏移
 const (
-	offTotalRetrans = 100 // u32 tcpi_total_retrans（段数）
-	offDataSegsOut  = 156 // u32 tcpi_data_segs_out，内核 4.6+
-	offBytesSent    = 200 // u64 tcpi_bytes_sent，内核 4.19+
-	offBytesRetrans = 208 // u64 tcpi_bytes_retrans，内核 4.19+
+	offTotalRetrans = 100 // u32 tcpi_total_retrans：累计重传段数
+	offSegsOut      = 136 // u32 tcpi_segs_out：内核 4.2+
+	offDataSegsOut  = 156 // u32 tcpi_data_segs_out：内核 4.6+
 )
 
-// readTCPRetrans 返回该连接累计发送量与重传量。
-// 内核 4.19+ 以字节计；较旧内核退回以段计。两者单位一致即可算比例。
+// readTCPRetrans 返回该连接累计发出的数据段数与重传段数。
+// 与 TcpQuality 相同：分母优先 data_segs_out，为 0 或内核过旧时退回 segs_out。
 func readTCPRetrans(c net.Conn) (sent, retrans uint64, ok bool) {
 	tc, isTCP := c.(*net.TCPConn)
 	if !isTCP {
@@ -35,15 +34,16 @@ func readTCPRetrans(c net.Conn) (sent, retrans uint64, ok bool) {
 		_, _, serr = syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, syscall.IPPROTO_TCP, syscall.TCP_INFO,
 			uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&n)), 0)
 	})
-	if cerr != nil || serr != 0 {
+	if cerr != nil || serr != 0 || n < offSegsOut+4 {
 		return 0, 0, false
 	}
-	le := binary.NativeEndian
-	switch {
-	case n >= offBytesRetrans+8:
-		return le.Uint64(buf[offBytesSent:]), le.Uint64(buf[offBytesRetrans:]), true
-	case n >= offDataSegsOut+4:
-		return uint64(le.Uint32(buf[offDataSegsOut:])), uint64(le.Uint32(buf[offTotalRetrans:])), true
+	ne := binary.NativeEndian
+	retrans = uint64(ne.Uint32(buf[offTotalRetrans:]))
+	if n >= offDataSegsOut+4 {
+		sent = uint64(ne.Uint32(buf[offDataSegsOut:]))
 	}
-	return 0, 0, false
+	if sent == 0 {
+		sent = uint64(ne.Uint32(buf[offSegsOut:]))
+	}
+	return sent, retrans, true
 }
