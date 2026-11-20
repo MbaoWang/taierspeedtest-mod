@@ -223,7 +223,7 @@ func targetsBSG() [][3]string {
 }
 
 func parsePoints(text string) ([][3]string, error) {
-	text = strings.TrimSpace(text)
+	text = strings.TrimSpace(toSimplified(text))
 	if text == "" {
 		return targetsBSG(), nil
 	}
@@ -294,7 +294,7 @@ func interactive(info ClientInfo, v6 bool, askFamily bool) (jobs [][3]string, mo
 	}
 	fmt.Println()
 	fmt.Println("  测速点  回车 = 北上广省会 × 电信/联通/移动")
-	fmt.Println("          可填省份、城市，多个用逗号分隔")
+	fmt.Println("          可填省份、城市，多个用逗号分隔（简繁体皆可）")
 	fmt.Println("          例: 湖北")
 	fmt.Println("          例: 北京,上海,浙江")
 	fmt.Println("          例: 武汉电信,杭州联通")
