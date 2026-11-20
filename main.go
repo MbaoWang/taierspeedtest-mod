@@ -68,6 +68,8 @@ type ProbeResult struct {
 	SingleDownF float64 `json:"single_down_f"`
 	MultiUpF    float64 `json:"multi_up_f"`
 	MultiDownF  float64 `json:"multi_down_f"`
+	Retrans     string  `json:"retrans"`   // 回程（上传方向）TCP 重传率
+	RetransF    float64 `json:"retrans_f"` // 百分比，-1 表示不可用
 }
 
 func dw(s string) int {
@@ -107,6 +109,33 @@ func fmtMS(v float64) string {
 	return fmt.Sprintf("%.0fms", v)
 }
 
+const legendText = "去程 = 测速点→本机（下载）  回程 = 本机→测速点（上传）  回程重传 = 本机发出的 TCP 重传率"
+
+func fmtRetrans(pct float64) string {
+	if pct < 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f%%", pct)
+}
+
+// retransLevel：0 好（<1%），1 一般（<5%），2 差
+func retransLevel(pct float64) int {
+	switch {
+	case pct < 1:
+		return 0
+	case pct < 5:
+		return 1
+	}
+	return 2
+}
+
+func retransCell(text string, pct float64, w int) string {
+	if pct < 0 {
+		return c(dim, padLeft(w, "-"))
+	}
+	return c([]string{green, yellow, red}[retransLevel(pct)], padLeft(w, text))
+}
+
 func speedColor(v float64) string {
 	if v < 0 || v <= 20 {
 		return red
@@ -131,22 +160,24 @@ func cell(text string, v float64, w int) string {
 func printHeader(family string, modes []string) {
 	parts := []string{c(cyan, padLeft(12, family)), c(cyan, padLeft(8, "延迟"))}
 	if contains(modes, "single") {
-		parts = append(parts, c(cyan, padLeft(12, "单线程上传")), c(cyan, padLeft(12, "单线程下载")))
+		parts = append(parts, c(cyan, padLeft(12, "单线程去程")), c(cyan, padLeft(12, "单线程回程")))
 	}
 	if contains(modes, "multi") {
-		parts = append(parts, c(cyan, padLeft(12, "多线程上传")), c(cyan, padLeft(12, "多线程下载")))
+		parts = append(parts, c(cyan, padLeft(12, "多线程去程")), c(cyan, padLeft(12, "多线程回程")))
 	}
+	parts = append(parts, c(cyan, padLeft(10, "回程重传")))
 	fmt.Println("  " + strings.Join(parts, "  "))
 }
 
 func printRow(r ProbeResult, modes []string) {
 	parts := []string{c(cyan, padLeft(12, r.Region)), padLeft(8, r.RTT)}
 	if contains(modes, "single") {
-		parts = append(parts, cell(r.SingleUp, r.SingleUpF, 12), cell(r.SingleDown, r.SingleDownF, 12))
+		parts = append(parts, cell(r.SingleDown, r.SingleDownF, 12), cell(r.SingleUp, r.SingleUpF, 12))
 	}
 	if contains(modes, "multi") {
-		parts = append(parts, cell(r.MultiUp, r.MultiUpF, 12), cell(r.MultiDown, r.MultiDownF, 12))
+		parts = append(parts, cell(r.MultiDown, r.MultiDownF, 12), cell(r.MultiUp, r.MultiUpF, 12))
 	}
+	parts = append(parts, retransCell(r.Retrans, r.RetransF, 10))
 	fmt.Println("  " + strings.Join(parts, "  "))
 }
 
@@ -355,7 +386,7 @@ func runOne(base, ip, prov, city, isp, imei string, lengthS, intervalMS int, mod
 	if ipv6 {
 		family = "IPv6"
 	}
-	r := ProbeResult{Region: prov + isp, Family: family, RTT: "-", SingleUp: "-", SingleDown: "-", MultiUp: "-", MultiDown: "-"}
+	r := ProbeResult{Region: prov + isp, Family: family, RTT: "-", SingleUp: "-", SingleDown: "-", MultiUp: "-", MultiDown: "-", Retrans: "-", RetransF: -1}
 	servers, err := matchServers(base, ip, prov, city, isp, ipv6)
 	if err != nil {
 		return r
@@ -370,15 +401,19 @@ func runOne(base, ip, prov, city, isp, imei string, lengthS, intervalMS int, mod
 	}
 	defer dequeue(*s, uuid)
 	r.RTT = fmtMS(measureLatency(s.HostIP, s.Port))
+	var rs RetransStat
 	for _, mode := range modes {
 		dth, uth := downTh, upTh
 		if mode == "single" {
 			dth, uth = 1, 1
 		}
-		down := runPhase(*s, uuid, true, dth, lengthS, intervalMS)
-		up := runPhase(*s, uuid, false, uth, lengthS, intervalMS)
+		down, _ := runPhase(*s, uuid, true, dth, lengthS, intervalMS)
+		up, upRS := runPhase(*s, uuid, false, uth, lengthS, intervalMS)
+		rs.Add(upRS)
 		applyMode(&r, mode, up, down)
 	}
+	r.RetransF = rs.Percent()
+	r.Retrans = fmtRetrans(r.RetransF)
 	return r
 }
 
@@ -523,6 +558,7 @@ func main() {
 		fmt.Println(string(b))
 		return
 	}
+	fmt.Println(c(dim, "  "+legendText))
 	fmt.Println()
 	if *noImage {
 		return

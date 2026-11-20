@@ -123,6 +123,59 @@ type byteCounter struct {
 func (c *byteCounter) add(n int) { c.n.Add(int64(n)) }
 func (c *byteCounter) snap() int64 { return c.n.Load() }
 
+// retransProbe 记录一条上传连接的 TCP 发送/重传量。
+// 工作协程结束前调用 finalize；测速窗口结束时 runPhase 对仍在运行的连接调用 snapshot。
+type retransProbe struct {
+	mu      sync.Mutex
+	conn    net.Conn
+	final   bool
+	ok      bool
+	sent    uint64
+	retrans uint64
+}
+
+func (p *retransProbe) snapshot() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.final || p.conn == nil {
+		return
+	}
+	if sent, re, ok := readTCPRetrans(p.conn); ok {
+		p.sent, p.retrans, p.ok = sent, re, true
+	}
+}
+
+func (p *retransProbe) finalize() {
+	p.snapshot()
+	p.mu.Lock()
+	p.final = true
+	p.mu.Unlock()
+}
+
+// RetransStat 是一组连接的发送量与重传量合计。
+type RetransStat struct {
+	Sent    uint64
+	Retrans uint64
+	OK      bool
+}
+
+func (a *RetransStat) Add(b RetransStat) {
+	if !b.OK {
+		return
+	}
+	a.Sent += b.Sent
+	a.Retrans += b.Retrans
+	a.OK = true
+}
+
+// Percent 返回重传率（%），不可用时返回 -1。
+func (a RetransStat) Percent() float64 {
+	if !a.OK || a.Sent == 0 {
+		return -1
+	}
+	return float64(a.Retrans) * 100 / float64(a.Sent)
+}
+
 func parseHTTPHeader(buf []byte) (code int, bodyOff int, ok bool) {
 	idx := strings.Index(string(buf), "\r\n\r\n")
 	if idx < 0 {
@@ -196,7 +249,7 @@ func downloadWorker(ctx context.Context, s Server, uuid string, counter *byteCou
 	}
 }
 
-func uploadWorker(ctx context.Context, s Server, uuid string, counter *byteCounter) {
+func uploadWorker(ctx context.Context, s Server, uuid string, counter *byteCounter, probe *retransProbe) {
 	addr := hostPort(s.HostIP, s.Port)
 	fn := time.Now().Format("SPEED_20060102_150405.000")
 	header := fmt.Sprintf(
@@ -210,6 +263,10 @@ func uploadWorker(ctx context.Context, s Server, uuid string, counter *byteCount
 		return
 	}
 	defer c.Close()
+	probe.mu.Lock()
+	probe.conn = c
+	probe.mu.Unlock()
+	defer probe.finalize() // 先于 Close 执行
 	if tc, ok := c.(*net.TCPConn); ok {
 		_ = tc.SetNoDelay(true)
 	}
@@ -259,19 +316,23 @@ func avgTop3(speeds []float64) float64 {
 	return sum / float64(n)
 }
 
-func runPhase(s Server, uuid string, down bool, threads, lengthS, intervalMS int) float64 {
+// runPhase 返回速率（Mbps）；上传阶段同时返回本机 TCP 重传统计（回程）。
+func runPhase(s Server, uuid string, down bool, threads, lengthS, intervalMS int) (float64, RetransStat) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var counter byteCounter
 	var wg sync.WaitGroup
+	probes := make([]*retransProbe, threads)
 	for i := 0; i < threads; i++ {
+		probes[i] = &retransProbe{}
+		probe := probes[i]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if down {
 				downloadWorker(ctx, s, uuid, &counter)
 			} else {
-				uploadWorker(ctx, s, uuid, &counter)
+				uploadWorker(ctx, s, uuid, &counter, probe)
 			}
 		}()
 		time.Sleep(40 * time.Millisecond)
@@ -307,6 +368,15 @@ func runPhase(s Server, uuid string, down bool, threads, lengthS, intervalMS int
 			samples = append(samples, speed)
 		}
 	}
+	var rs RetransStat
+	if !down {
+		for _, p := range probes {
+			p.snapshot()
+			p.mu.Lock()
+			rs.Add(RetransStat{Sent: p.sent, Retrans: p.retrans, OK: p.ok})
+			p.mu.Unlock()
+		}
+	}
 	cancel()
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
@@ -314,5 +384,5 @@ func runPhase(s Server, uuid string, down bool, threads, lengthS, intervalMS int
 	case <-done:
 	case <-time.After(1 * time.Second):
 	}
-	return avgTop3(samples)
+	return avgTop3(samples), rs
 }
