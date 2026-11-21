@@ -216,38 +216,50 @@ func pickServer(servers []Server, province, city, oper string) *Server {
 	return &servers[0]
 }
 
+// queueWait 是排队取 key 的最长等待时间；服务器回「排队中」或「忙」时会在此时间内持续询问。
+var (
+	queueWait     = 15 * time.Second
+	queueInterval = time.Second
+)
+
+// enqueue 向测速服务器排队取 key。
+// 回应：1|key 成功；2 排队中；0 服务器忙；-1 参数错误。
 func enqueue(s Server, imei string, bandwidth int) (string, error) {
-	ts := fmt.Sprintf("%d", time.Now().Unix())
-	token := enqueueToken(imei, ts, bandwidth)
-	raw := fmt.Sprintf(
-		"http://%s/speed/dovalid?key=&flag=true&bandwidth=%d&model=Android&imei=%s&time=%s&app=%s&token=%s&pkg=%s",
-		hostPort(s.HostIP, s.Port), bandwidth, url.QueryEscape(imei), ts, appName, token, pkgName,
-	)
-	var last string
-	for i := 0; i < 3; i++ {
+	deadline := time.Now().Add(queueWait)
+	start := time.Now()
+	var reason string
+	for try := 1; ; try++ {
+		ts := fmt.Sprintf("%d", time.Now().Unix()) // token 含时间戳，每次询问都重算
+		raw := fmt.Sprintf(
+			"http://%s/speed/dovalid?key=&flag=true&bandwidth=%d&model=Android&imei=%s&time=%s&app=%s&token=%s&pkg=%s",
+			hostPort(s.HostIP, s.Port), bandwidth, url.QueryEscape(imei), ts, appName, enqueueToken(imei, ts, bandwidth), pkgName,
+		)
 		body, err := httpGet(raw, 5*time.Second)
-		if err != nil {
-			last = err.Error()
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
 		body = strings.TrimSpace(body)
-		last = body
-		if strings.HasPrefix(body, "0") {
-			return "", fmt.Errorf("服务器忙")
-		}
-		if strings.HasPrefix(body, "2") {
-			time.Sleep(400 * time.Millisecond)
-			continue
-		}
-		if strings.HasPrefix(body, "-1") {
-			return "", fmt.Errorf("dovalid 参数错误")
-		}
-		if len(body) > 2 {
+		switch {
+		case err != nil:
+			reason = "连不上测速服务器"
+			debugf("排队 #%d：%v", try, err)
+		case strings.HasPrefix(body, "-1"):
+			return "", fmt.Errorf("服务器拒绝（参数错误）")
+		case strings.HasPrefix(body, "0"):
+			reason = "服务器忙"
+			debugf("排队 #%d：服务器忙（%s）", try, truncate(body, 60))
+		case strings.HasPrefix(body, "2"):
+			reason = "排队超时"
+			debugf("排队 #%d：排队中（%s）", try, truncate(body, 60))
+		case strings.HasPrefix(body, "1") && len(body) > 2:
+			debugf("排队 #%d：取得 key，用时 %.1fs", try, time.Since(start).Seconds())
 			return body[2:], nil
+		default:
+			reason = "服务器回应异常"
+			debugf("排队 #%d：未知回应 %q", try, truncate(body, 60))
 		}
+		if time.Now().Add(queueInterval).After(deadline) {
+			return "", fmt.Errorf("%s", reason)
+		}
+		time.Sleep(queueInterval)
 	}
-	return "", fmt.Errorf("enqueue 失败: %s", last)
 }
 
 func dequeue(s Server, uuid string) {

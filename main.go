@@ -69,9 +69,20 @@ type ProbeResult struct {
 	SingleDownF float64 `json:"single_down_f"`
 	MultiUpF    float64 `json:"multi_up_f"`
 	MultiDownF  float64 `json:"multi_down_f"`
-	Retrans     string  `json:"retrans"`   // 回程（上传方向）TCP 重传率，优先取单线程
-	RetransF    float64 `json:"retrans_f"` // 百分比，-1 表示不可用
-	Retried     int     `json:"retried"`   // 因失败自动重测的次数
+	Retrans     string  `json:"retrans"`         // 回程（上传方向）TCP 重传率，优先取单线程
+	RetransF    float64 `json:"retrans_f"`       // 百分比，-1 表示不可用
+	Retried     int     `json:"retried"`         // 因失败自动重测的次数
+	Err         string  `json:"error,omitempty"` // 没测到数据的原因
+}
+
+var debugMode bool
+
+// debugf 在 --debug 时输出排错信息到 stderr（先清掉进度行）。
+func debugf(format string, a ...any) {
+	if !debugMode {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\r\033[2K%s[debug] %s%s\n", dim, fmt.Sprintf(format, a...), nc)
 }
 
 func dw(s string) int {
@@ -180,6 +191,9 @@ func printRow(r ProbeResult, modes []string) {
 	}
 	if r.Retried > 0 {
 		parts = append(parts, c(dim, fmt.Sprintf("已自动重测 ×%d", r.Retried)))
+	}
+	if r.Err != "" {
+		parts = append(parts, c(yellow, r.Err))
 	}
 	fmt.Println("  " + strings.Join(parts, "  "))
 }
@@ -418,7 +432,15 @@ func runMode(s Server, imei, mode string, lengthS, intervalMS, downTh, upTh int)
 	var m modeResult
 	m.down, _ = runPhase(s, uuid, true, dth, lengthS, intervalMS)
 	m.up, m.rs = runPhase(s, uuid, false, uth, lengthS, intervalMS)
+	debugf("%s：去程 %.2f / 回程 %.2f Mbps，回程重传 %s", modeName(mode), m.down, m.up, fmtRetrans(m.rs.Percent()))
 	return m, nil
+}
+
+func modeName(mode string) string {
+	if mode == "single" {
+		return "单线程"
+	}
+	return "多线程"
 }
 
 var retryDelay = 3 * time.Second
@@ -429,19 +451,30 @@ func runOne(base, ip, prov, city, isp, imei string, lengthS, intervalMS int, mod
 		family = "IPv6"
 	}
 	r := ProbeResult{Region: prov + isp, Family: family, RTT: "-", SingleUp: "-", SingleDown: "-", MultiUp: "-", MultiDown: "-", Retrans: "-", RetransF: -1}
+	debugf("── %s %s%s（%s）", family, prov, isp, city)
 	servers, err := matchServers(base, ip, prov, city, isp, ipv6)
 	if err != nil {
+		debugf("查询测速节点失败：%v", err)
+		r.Err = "查询测速节点失败"
 		return r
 	}
+	debugf("候选测速节点 %d 个", len(servers))
 	s := pickServer(servers, prov, city, isp)
 	if s == nil {
+		r.Err = "找不到测速节点"
 		return r
 	}
+	debugf("选用 %s（%s，%s）", s.HostName, hostPort(s.HostIP, s.Port), s.City)
+	if ipv6 && !strings.Contains(s.HostIP, ":") {
+		debugf("注意：IPv6 测速却分配到 IPv4 地址的节点")
+	}
 	r.RTT = fmtMS(measureLatency(s.HostIP, s.Port))
+	debugf("延迟 %s", r.RTT)
 	var singleRS, multiRS RetransStat
 	for _, mode := range modes {
 		// 有任一方向失败就重测，保留失败最少的那一次
 		var best modeResult
+		var lastErr error
 		bestFails := 3 // 比任何结果都差：连 key 都拿不到
 		for try := 0; try <= retries; try++ {
 			if try > 0 {
@@ -452,6 +485,9 @@ func runOne(base, ip, prov, city, isp, imei string, lengthS, intervalMS int, mod
 			f := 3
 			if err == nil {
 				f = m.fails()
+			} else {
+				lastErr = err
+				debugf("%s 第 %d 次：%v", modeName(mode), try+1, err)
 			}
 			if f < bestFails {
 				best, bestFails = m, f
@@ -461,6 +497,9 @@ func runOne(base, ip, prov, city, isp, imei string, lengthS, intervalMS int, mod
 			}
 		}
 		if bestFails == 3 {
+			if r.Err == "" && lastErr != nil {
+				r.Err = lastErr.Error()
+			}
 			continue // 排不到队，保持 "-"
 		}
 		if mode == "single" {
@@ -496,6 +535,8 @@ func main() {
 	noIPv6 := flag.Bool("no-ipv6", false, "不测 IPv6（等同 --ip 4）")
 	noImage := flag.Bool("no-image", false, "不出图")
 	retries := flag.Int("retries", 1, "测速失败自动重测次数（0-3）")
+	queueSec := flag.Int("queue-wait", 15, "排队取测速 key 最长等待秒数")
+	flag.BoolVar(&debugMode, "debug", false, "输出排错信息（失败原因、选用节点、排队过程）")
 	flag.Parse()
 	if *duration < 5 {
 		*duration = 5
@@ -503,6 +544,10 @@ func main() {
 	if *duration > 13 {
 		*duration = 13
 	}
+	if *queueSec < 1 {
+		*queueSec = 1
+	}
+	queueWait = time.Duration(*queueSec) * time.Second
 	if *retries < 0 {
 		*retries = 0
 	}
