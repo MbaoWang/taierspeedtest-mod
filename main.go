@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -70,6 +71,7 @@ type ProbeResult struct {
 	MultiDownF  float64 `json:"multi_down_f"`
 	Retrans     string  `json:"retrans"`   // 回程（上传方向）TCP 重传率，优先取单线程
 	RetransF    float64 `json:"retrans_f"` // 百分比，-1 表示不可用
+	Retried     int     `json:"retried"`   // 因失败自动重测的次数
 }
 
 func dw(s string) int {
@@ -175,6 +177,9 @@ func printRow(r ProbeResult, modes []string) {
 	}
 	if contains(modes, "multi") {
 		parts = append(parts, cell(r.MultiDown, r.MultiDownF, 12), cell(r.MultiUp, r.MultiUpF, 12))
+	}
+	if r.Retried > 0 {
+		parts = append(parts, c(dim, fmt.Sprintf("已自动重测 ×%d", r.Retried)))
 	}
 	fmt.Println("  " + strings.Join(parts, "  "))
 }
@@ -379,7 +384,46 @@ func applyMode(r *ProbeResult, mode string, up, down float64) {
 	r.MultiUpF, r.MultiDownF = up, down
 }
 
-func runOne(base, ip, prov, city, isp, imei string, lengthS, intervalMS int, modes []string, downTh, upTh int, ipv6 bool) ProbeResult {
+// modeResult 是某个模式（单线程或多线程）一次测速的结果。
+type modeResult struct {
+	up, down float64
+	rs       RetransStat
+}
+
+// fails 返回去程/回程中失败（≈0）的项数，2 表示完全没测到。
+func (m modeResult) fails() int {
+	n := 0
+	if m.up < 0.001 {
+		n++
+	}
+	if m.down < 0.001 {
+		n++
+	}
+	return n
+}
+
+// runMode 为一个模式单独排队取 key，测完立即释放。
+// 同一把 key 连续跑 单下→单上→多下→多上 时，后面的多线程（尤其回程）常被服务器拒绝而显示 failed，
+// 因此每个模式各取一把新 key。
+func runMode(s Server, imei, mode string, lengthS, intervalMS, downTh, upTh int) (modeResult, error) {
+	uuid, err := enqueue(s, imei, 200)
+	if err != nil {
+		return modeResult{}, err
+	}
+	defer dequeue(s, uuid)
+	dth, uth := downTh, upTh
+	if mode == "single" {
+		dth, uth = 1, 1
+	}
+	var m modeResult
+	m.down, _ = runPhase(s, uuid, true, dth, lengthS, intervalMS)
+	m.up, m.rs = runPhase(s, uuid, false, uth, lengthS, intervalMS)
+	return m, nil
+}
+
+var retryDelay = 3 * time.Second
+
+func runOne(base, ip, prov, city, isp, imei string, lengthS, intervalMS int, modes []string, downTh, upTh int, ipv6 bool, retries int) ProbeResult {
 	family := "IPv4"
 	if ipv6 {
 		family = "IPv6"
@@ -393,26 +437,38 @@ func runOne(base, ip, prov, city, isp, imei string, lengthS, intervalMS int, mod
 	if s == nil {
 		return r
 	}
-	uuid, err := enqueue(*s, imei, 200)
-	if err != nil {
-		return r
-	}
-	defer dequeue(*s, uuid)
 	r.RTT = fmtMS(measureLatency(s.HostIP, s.Port))
 	var singleRS, multiRS RetransStat
 	for _, mode := range modes {
-		dth, uth := downTh, upTh
-		if mode == "single" {
-			dth, uth = 1, 1
+		// 有任一方向失败就重测，保留失败最少的那一次
+		var best modeResult
+		bestFails := 3 // 比任何结果都差：连 key 都拿不到
+		for try := 0; try <= retries; try++ {
+			if try > 0 {
+				time.Sleep(retryDelay)
+				r.Retried++
+			}
+			m, err := runMode(*s, imei, mode, lengthS, intervalMS, downTh, upTh)
+			f := 3
+			if err == nil {
+				f = m.fails()
+			}
+			if f < bestFails {
+				best, bestFails = m, f
+			}
+			if bestFails == 0 {
+				break
+			}
 		}
-		down, _ := runPhase(*s, uuid, true, dth, lengthS, intervalMS)
-		up, upRS := runPhase(*s, uuid, false, uth, lengthS, intervalMS)
+		if bestFails == 3 {
+			continue // 排不到队，保持 "-"
+		}
 		if mode == "single" {
-			singleRS.Add(upRS)
+			singleRS.Add(best.rs)
 		} else {
-			multiRS.Add(upRS)
+			multiRS.Add(best.rs)
 		}
-		applyMode(&r, mode, up, down)
+		applyMode(&r, mode, best.up, best.down)
 	}
 	rs := singleRS
 	if !rs.OK {
@@ -439,12 +495,19 @@ func main() {
 	ipv6F := flag.Bool("ipv6", false, "强制加测 IPv6（等同 --ip both）")
 	noIPv6 := flag.Bool("no-ipv6", false, "不测 IPv6（等同 --ip 4）")
 	noImage := flag.Bool("no-image", false, "不出图")
+	retries := flag.Int("retries", 1, "测速失败自动重测次数（0-3）")
 	flag.Parse()
 	if *duration < 5 {
 		*duration = 5
 	}
 	if *duration > 13 {
 		*duration = 13
+	}
+	if *retries < 0 {
+		*retries = 0
+	}
+	if *retries > 3 {
+		*retries = 3
 	}
 
 	base, info, err := fetchClient()
@@ -542,7 +605,7 @@ func main() {
 				}
 				fmt.Fprintf(os.Stderr, "\r%s  测速进度%s  %d/%d  %s%s%s   ", cyan, nc, done, total, tag, j[0], j[2])
 			}
-			row := runOne(base, info.IP, j[0], j[1], j[2], imei, *duration, *interval, modes, *downTh, *upTh, ipv6)
+			row := runOne(base, info.IP, j[0], j[1], j[2], imei, *duration, *interval, modes, *downTh, *upTh, ipv6, *retries)
 			rows = append(rows, row)
 			done += len(modes)
 			if !*jsonF {
