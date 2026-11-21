@@ -61,6 +61,8 @@ go build -o taierspeedtest .
 | 回程 | 本机 → 测速点（上传） |
 | 回程重传 | 单线程回程测速时，本机 TCP 重传段数 ÷ 发出数据段数（读取 Linux `TCP_INFO` 的 `total_retrans / data_segs_out`，算法参考 [TcpQuality](https://github.com/ibsgss/TcpQuality)）。只测多线程时改用多线程回程。≤10% 绿、10–20% 黄、≥20% 红 |
 
+测速失败时会自动重测（`--retries`，0–3，默认 1）：任一方向测到 0 就等 3 秒换新 key 重跑该模式，保留失败最少的一次，终端会标示「已自动重测 ×N」。单线程与多线程各自取一把新的测速 key，避免同一把 key 连跑四段时多线程回程被服务器拒绝。
+
 去程方向的重传发生在测速服务器端，本机无法读取，因此只提供回程重传。
 
 ## 结果图
